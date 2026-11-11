@@ -47,7 +47,8 @@ func readPassphraseFile(_ path: String) throws -> Data {
 	#if os(Windows)
 		throw VaultError.invalidArgument("--passphrase-file is not supported on Windows")
 	#else
-		let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+		// O_NONBLOCK: a FIFO must be refused by the fstat check below, not hang the open.
+		let fd = open(path, O_RDONLY | O_NOFOLLOW | O_CLOEXEC | O_NONBLOCK)
 		guard fd >= 0 else {
 			throw VaultError.invalidArgument(errno == ELOOP ? "passphrase file is a symlink; refused" : "cannot open passphrase file")
 		}

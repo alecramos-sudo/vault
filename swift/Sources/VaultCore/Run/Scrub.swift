@@ -37,8 +37,10 @@ public final class Scrubber: @unchecked Sendable {
 	}
 
 	// Register a value plus the encodings it commonly travels under.
-	public func register(_ value: String) {
-		guard value.count >= Self.minLength else { return }
+	// `force` registers values shorter than `minLength` too (run-only boxes, where an
+	// unmasked short secret is worse than over-redacted output).
+	public func register(_ value: String, force: Bool = false) {
+		guard !value.isEmpty, force || value.count >= Self.minLength else { return }
 		lock.lock()
 		defer { lock.unlock() }
 		add(value)

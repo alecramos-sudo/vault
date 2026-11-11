@@ -4,6 +4,18 @@ import Testing
 @testable import VaultCore
 
 // Fleet hardening (agents#241, Bastion review 2026-11-10).
+@Suite struct ForcedScrubTests {
+	@Test func forceMasksShortValues() {
+		let s = Scrubber()
+		s.register("1234")
+		#expect(s.scrub("pin 1234") == "pin 1234")
+		s.register("1234", force: true)
+		#expect(s.scrub("pin 1234") == "pin [REDACTED]")
+		s.register("", force: true)
+		#expect(s.scrub("x") == "x")
+	}
+}
+
 @Suite struct LowOrderPointTests {
 	// Curve25519 u-coordinates of small order, little-endian: 0, 1, and a point of order 8.
 	// Each makes the X25519 shared secret all zeros, whatever the private key.
@@ -53,6 +65,41 @@ extension Data {
 
 		private func run(_ h: String, _ a: [String], _ secrets: [String] = [], stdin: Bool = false) async -> VaultCommands.Output {
 			await VaultCommands.execute(["--json"] + (stdin ? ["--passphrase-stdin"] : []) + a, secrets: secrets, environment: ["VAULT_HOME": h])
+		}
+
+		@Test func runOnlyHoldsWhenVaultHomeMovesButDbPointsBack() async throws {
+			let h = home(), other = home()
+			defer {
+				try? FileManager.default.removeItem(atPath: h)
+				try? FileManager.default.removeItem(atPath: other)
+			}
+			#expect(await run(h, ["init"], ["pw"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["add", "--field-stdin", "1", "--", "store"], ["pw", "password=value-1"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["run-only", "enable"]).exitCode == 0)
+			let db = h + "/vaults/personal.db"
+			let r = await VaultCommands.execute(
+				["--json", "--passphrase-stdin", "--db", db, "get", "--field", "password", "--", "store"], secrets: ["pw"], environment: ["VAULT_HOME": other])
+			#expect(r.exitCode == 1 && r.stdout.contains("run-only"))
+			#expect(!r.stdout.contains("value-1"))
+		}
+
+		@Test func runOnlyRefusesProxy() async throws {
+			let h = home()
+			defer { try? FileManager.default.removeItem(atPath: h) }
+			#expect(await run(h, ["init"], ["pw"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["run-only", "enable"]).exitCode == 0)
+			let r = await run(h, ["proxy", "--config", h + "/p.env"], ["pw"], stdin: true)
+			#expect(r.exitCode == 1 && r.stdout.contains("run-only"))
+		}
+
+		@Test func passphraseFifoIsRefusedNotHung() async throws {
+			let h = home()
+			defer { try? FileManager.default.removeItem(atPath: h) }
+			#expect(await run(h, ["init"], ["pw"], stdin: true).exitCode == 0)
+			let fifo = h + "/pass.fifo"
+			#expect(mkfifo(fifo, 0o600) == 0)
+			let r = await run(h, ["list", "--passphrase-file", fifo])
+			#expect(r.exitCode == 1 && r.stdout.contains("not a regular file"))
 		}
 
 		private func write(_ path: String, _ s: String, mode: Int) throws {

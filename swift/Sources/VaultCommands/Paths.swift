@@ -46,7 +46,18 @@ func listVaultNames() throws -> [String] {
 // command to turn it off: delete the file by hand.
 func runOnlyMarkerPath() -> String { (configDir() as NSString).appendingPathComponent("run-only") }
 
-func isRunOnly() -> Bool { FileManager.default.fileExists(atPath: runOnlyMarkerPath()) }
+// On when the marker is in the current config dir, or in the config dir of an explicit
+// `--db` (<config>/vaults/<name>.db), so pointing VAULT_HOME elsewhere while opening the
+// protected replica by path does not skip it.
+func isRunOnly(_ a: ParsedArgs? = nil) -> Bool {
+	var markers = [runOnlyMarkerPath()]
+	if let db = a?.value("db") {
+		let dir = (URL(fileURLWithPath: db).standardizedFileURL.path as NSString).deletingLastPathComponent
+		markers.append((dir as NSString).appendingPathComponent("run-only"))
+		markers.append(((dir as NSString).deletingLastPathComponent as NSString).appendingPathComponent("run-only"))
+	}
+	return markers.contains { FileManager.default.fileExists(atPath: $0) }
+}
 
 func enableRunOnly() throws {
 	_ = try vaultsDir()  // creates the config dir at 0700
@@ -56,7 +67,8 @@ func enableRunOnly() throws {
 }
 
 // Commands allowed on a run-only box: none of them prints an item's value.
-let runOnlyCommands: Set<String> = ["run", "proxy", "list", "vaults", "sync", "auth", "invite", "join", "device-confirm", "run-only"]
+// `proxy` is left out: it forwards binary upstream responses unredacted.
+let runOnlyCommands: Set<String> = ["run", "list", "vaults", "sync", "auth", "invite", "join", "device-confirm", "run-only"]
 
 // Names a `.env` may not declare on a run-only box: declared values win over the
 // stripped vault credentials, so a manifest could hand them to the child.

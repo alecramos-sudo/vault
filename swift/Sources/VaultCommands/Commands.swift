@@ -57,8 +57,8 @@ let help = """
 	                               without it, print the recovered identity keys
 	  keystore (status|enable|disable)   OS-keychain second factor for at-rest keys
 	  run [--env <file>] [--allow-missing] [--mask] -- <cmd> [args...]
-	  run-only [enable]            Show or turn on run-only mode for this box: only run, proxy,
-	                               list, vaults, sync and enrollment work; run always masks.
+	  run-only [enable]            Show or turn on run-only mode for this box: only run, list,
+	                               vaults, sync and enrollment work; run always masks.
 	                               Turn off by deleting <config>/run-only.
 	  --passphrase-file <path>     Read the passphrase from a file (also $VAULT_PASSPHRASE_FILE).
 	                               Refuses symlinks, other owners and group/other permissions.
@@ -161,7 +161,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 	}
 	let rest = Array(a.positionals.dropFirst())
 
-	if isRunOnly(), !runOnlyCommands.contains(command) {
+	if isRunOnly(a), !runOnlyCommands.contains(command) {
 		throw VaultError.notAuthorized("this box is run-only: '\(command)' is disabled (use 'vault run -- <cmd>')")
 	}
 
@@ -169,7 +169,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 	case "run-only":
 		switch rest.first {
 		case nil:
-			let on = isRunOnly()
+			let on = isRunOnly(a)
 			emit("run-only: \(on ? "on" : "off")\n", [JSONMember("runOnly", .bool(on)), JSONMember("marker", .string(runOnlyMarkerPath()))])
 		case "enable":
 			try enableRunOnly()

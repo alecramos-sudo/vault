@@ -22,7 +22,7 @@ func runChild(_ e: VaultEngine, _ a: ParsedArgs, _ cmd: String, _ args: [String]
 		if !a.flag("allow-missing") { throw VaultError.invalidArgument("\(msg) (use --allow-missing to proceed)") }
 		writeErr("warning: \(msg)\n")
 	}
-	let runOnly = isRunOnly()
+	let runOnly = isRunOnly(a)
 	if runOnly, let bad = env.first(where: { isReservedEnvName($0.0) }) {
 		throw VaultError.invalidArgument("run-only box: .env may not declare \(bad.0)")
 	}
@@ -43,7 +43,7 @@ func runChild(_ e: VaultEngine, _ a: ParsedArgs, _ cmd: String, _ args: [String]
 	let scrubber = Scrubber()
 	var drainJobs: [@Sendable () -> Void] = []
 	if a.flag("mask") || runOnly {
-		for (_, v) in env { scrubber.register(v) }
+		for (_, v) in env { scrubber.register(v, force: runOnly) }
 		let out = Pipe(), err = Pipe()
 		p.standardOutput = out
 		p.standardError = err
