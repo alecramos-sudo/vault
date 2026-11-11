@@ -38,3 +38,29 @@ func listVaultNames() throws -> [String] {
 	try FileManager.default.contentsOfDirectory(atPath: try vaultsDir()).filter { $0.hasSuffix(".db") }
 		.map { String($0.dropLast(3)) }.sorted()
 }
+
+// Run-only box (fleet): a marker file in the config dir. While it exists, only the
+// commands that never print a secret run, `run` masks child output, and a `.env`
+// may not declare the vault's own credential names. It guards against accidents by
+// an agent on the box, not against someone who can delete the file. There is no
+// command to turn it off: delete the file by hand.
+func runOnlyMarkerPath() -> String { (configDir() as NSString).appendingPathComponent("run-only") }
+
+func isRunOnly() -> Bool { FileManager.default.fileExists(atPath: runOnlyMarkerPath()) }
+
+func enableRunOnly() throws {
+	_ = try vaultsDir()  // creates the config dir at 0700
+	let path = runOnlyMarkerPath()
+	guard FileManager.default.createFile(atPath: path, contents: Data("run-only\n".utf8), attributes: [.posixPermissions: 0o600])
+	else { throw VaultError.invalidArgument("cannot write \(path)") }
+}
+
+// Commands allowed on a run-only box: none of them prints an item's value.
+let runOnlyCommands: Set<String> = ["run", "proxy", "list", "vaults", "sync", "auth", "invite", "join", "device-confirm", "run-only"]
+
+// Names a `.env` may not declare on a run-only box: declared values win over the
+// stripped vault credentials, so a manifest could hand them to the child.
+func isReservedEnvName(_ k: String) -> Bool {
+	let u = k.uppercased()
+	return u.hasPrefix("VAULT_") || u.hasPrefix("CF_ACCESS_")
+}

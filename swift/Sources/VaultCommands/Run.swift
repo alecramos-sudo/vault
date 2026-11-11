@@ -6,7 +6,7 @@ import VaultCore
 // never inherits the vault's own credentials; failure to resolve aborts before spawn.
 
 private let vaultSecretEnv: Set<String> = [
-	"VAULT_PASSPHRASE", "VAULT_ORG_KEY", "VAULT_RELAY_TOKEN", "VAULT_RELAY_TOKENS", "VAULT_PEER_TOKEN",
+	"VAULT_PASSPHRASE", "VAULT_PASSPHRASE_FILE", "VAULT_ORG_KEY", "VAULT_RELAY_TOKEN", "VAULT_RELAY_TOKENS", "VAULT_PEER_TOKEN",
 	"VAULT_TPM2_PIN", "CF_ACCESS_CLIENT_ID", "CF_ACCESS_CLIENT_SECRET",
 ]
 
@@ -21,6 +21,10 @@ func runChild(_ e: VaultEngine, _ a: ParsedArgs, _ cmd: String, _ args: [String]
 		let msg = "unresolved variables: \(missing.joined(separator: ", "))"
 		if !a.flag("allow-missing") { throw VaultError.invalidArgument("\(msg) (use --allow-missing to proceed)") }
 		writeErr("warning: \(msg)\n")
+	}
+	let runOnly = isRunOnly()
+	if runOnly, let bad = env.first(where: { isReservedEnvName($0.0) }) {
+		throw VaultError.invalidArgument("run-only box: .env may not declare \(bad.0)")
 	}
 	if !env.isEmpty {
 		// Per-access audit line: names, never values.
@@ -38,7 +42,7 @@ func runChild(_ e: VaultEngine, _ a: ParsedArgs, _ cmd: String, _ args: [String]
 
 	let scrubber = Scrubber()
 	var drainJobs: [@Sendable () -> Void] = []
-	if a.flag("mask") {
+	if a.flag("mask") || runOnly {
 		for (_, v) in env { scrubber.register(v) }
 		let out = Pipe(), err = Pipe()
 		p.standardOutput = out
