@@ -5,16 +5,21 @@ on:
     branches: ["**"]
   pull_request:
 
+# Least privilege: every job gets a read-only token unless it asks for more below.
 permissions:
   contents: read
 
+# Actions are pinned to full commit SHAs (tag in the trailing comment). Bump them
+# together, resolving each SHA from the action's release tag.
 jobs:
   test:
     name: test + typecheck + zero-dep
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
-      - uses: actions/setup-node@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           # Node 26 runs the Worker's TypeScript directly (type stripping is the
           # default). Pin the exact patch per release and re-run on every Node bump.
@@ -30,13 +35,15 @@ jobs:
     needs: test
     runs-on: windows-2025
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
       # Compile the WinRT helper — validates the CsWinRT projections and the
       # WinVerifyTrust interop actually build against the Windows SDK. Self-contained
       # single-file so the ONE published .exe is a drop-in sibling of vault.exe with
       # no .NET runtime install on the user's box; a framework-dependent apphost stub can't run on its own.
       - run: dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true windows/hello-helper
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vault-hello-helper-win-x64
           path: windows/hello-helper/bin/Release/net8.0-windows10.0.19041.0/win-x64/publish/vault-hello-helper.exe
@@ -51,7 +58,7 @@ jobs:
     permissions:
       actions: write
     steps:
-      - uses: actions/github-script@v8
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
         with:
           script: |
             // Keep only the newest 3 artifacts per name (one per Swift target
@@ -82,10 +89,14 @@ jobs:
   native:
     name: native app (darwin-arm64)
     needs: test
-    runs-on: xcode-27 # Apple Silicon (arm64); preview image with Xcode 27 (Swift 6.4)
+    # GA Apple Silicon image. Xcode 26.6 ships Swift 6.3.3, the version Package.swift
+    # targets; the xcode-27 label is a preview image (no SLA) with Swift 6.4.
+    runs-on: macos-26
     steps:
-      - uses: actions/checkout@v6
-      - run: sudo xcode-select -s /Applications/Xcode_27.0.app
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - run: sudo xcode-select -s /Applications/Xcode_26.6.app && swift --version
       # The app links the Swift engine directly (no Node SEA, no vault-helper).
       - run: ./build.sh
         working-directory: macos
@@ -100,35 +111,53 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: xcode-27, target: macos-arm64 }
-          - { os: ubuntu-24.04, target: linux-x64 }
-          - { os: ubuntu-24.04-arm, target: linux-arm64 }
-          - { os: windows-2025, target: windows-x64 }
+          - { os: macos-26, target: macos-arm64, flags: "" }
+          # Static Swift runtime: the Linux binary must run on a box with no toolchain.
+          - { os: ubuntu-24.04, target: linux-x64, flags: "--static-swift-stdlib" }
+          - { os: ubuntu-24.04-arm, target: linux-arm64, flags: "--static-swift-stdlib" }
+          - { os: windows-2025, target: windows-x64, flags: "" }
     # Windows builds without VaultNet (no relay/serve/proxy/tailnet sync) and with the
     # vendored SQLite; see swift/Package.swift.
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30 # a hung test must fail, not burn the 6h default
     steps:
-      - uses: actions/checkout@v6
-      # macOS uses the runner's Xcode 27 toolchain (Swift 6.4); elsewhere install the same release.
-      - if: runner.os == 'macOS'
-        run: sudo xcode-select -s /Applications/Xcode_27.0.app
-      - if: runner.os != 'macOS'
-        uses: SwiftyLab/setup-swift@9014d4136569075c696d4151c7810ecde8712907 # v1.14.1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          swift-version: "6.4"
+          persist-credentials: false
+      # macOS uses Xcode 26.6's toolchain (Swift 6.3.3); elsewhere install the same release.
+      - if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - if: runner.os != 'macOS'
+        uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
+        with:
+          swift-version: "6.3.3"
+      - run: swift --version
       - if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+      # --force-resolved-versions: build only what swift/Package.resolved pins; fail
+      # instead of resolving anything new.
       - working-directory: swift
-        run: swift build -c release
+        run: swift build -c release --force-resolved-versions ${{ matrix.flags }}
       - working-directory: swift
-        run: swift test
+        run: swift test --force-resolved-versions
       - shell: bash
+        env:
+          FLAGS: ${{ matrix.flags }}
         run: |
-          BIN=swift/.build/release/vault; [ -f "$BIN" ] || BIN="$(cd swift && swift build -c release --show-bin-path)/vault"
+          # shellcheck disable=SC2086 # FLAGS is a space-separated flag list
+          BIN="$(cd swift && swift build -c release --force-resolved-versions $FLAGS --show-bin-path)/vault"
           [ -f "$BIN" ] || BIN="$BIN.exe"
           mkdir -p dist && cp "$BIN" dist/
-      - uses: actions/upload-artifact@v7
+      - if: runner.os == 'Linux'
+        name: check no Swift runtime is linked dynamically
+        run: |
+          ldd dist/vault | tee ldd.txt
+          if grep -E 'libswift|libFoundation|lib_FoundationICU|libdispatch|libBlocksRuntime|not found' ldd.txt; then
+            echo "::error::dist/vault links the Swift runtime dynamically (or has a missing library)"
+            exit 1
+          fi
+          dist/vault --version
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vault-${{ matrix.target }}
           path: dist/vault*
@@ -142,10 +171,12 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v6
-      - uses: SwiftyLab/setup-swift@9014d4136569075c696d4151c7810ecde8712907 # v1.14.1
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
-          swift-version: "6.4"
+          persist-credentials: false
+      - uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
+        with:
+          swift-version: "6.3.3"
       - run: sudo apt-get update && sudo apt-get install -y swtpm swtpm-tools tpm2-tools libsqlite3-dev pkg-config
       - name: start swtpm
         run: |
@@ -155,4 +186,4 @@ jobs:
             --server type=tcp,port=2321 --ctrl type=tcp,port=2322 --flags not-need-init,startup-clear --daemon
           echo "TPM2TOOLS_TCTI=swtpm:port=2321" >> "$GITHUB_ENV"
       - working-directory: swift
-        run: VAULT_TPM2_REAL=1 swift test --filter realTpm
+        run: VAULT_TPM2_REAL=1 swift test --force-resolved-versions --filter realTpm
