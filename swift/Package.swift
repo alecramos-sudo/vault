@@ -1,4 +1,4 @@
-// swift-tools-version:6.4
+// swift-tools-version:6.3
 //
 // Swift local stack (vault.spec.md §15.2–§15.3): portable VaultCore + CLI +
 // thin per-OS platform modules. The Cloudflare relay stays TypeScript.

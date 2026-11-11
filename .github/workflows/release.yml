@@ -1,0 +1,137 @@
+name: release
+
+# Pushing a v* tag builds, tests and attests the CLI for macOS arm64 and Linux
+# x64/arm64, then publishes a GitHub release with vault-<target> binaries and
+# SHA256SUMS. Install with scripts/install-release.sh, which checks both.
+on:
+  push:
+    tags: ["v*"]
+
+# Least privilege: read-only by default; only the attest and publish jobs widen it.
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # GA Apple Silicon image; Xcode 26.6 ships Swift 6.3.3 (same as Linux below).
+          - { os: macos-26, target: macos-arm64, flags: "" }
+          # Static Swift runtime: the binary must run on a box with no toolchain.
+          - { os: ubuntu-24.04, target: linux-x64, flags: "--static-swift-stdlib" }
+          - { os: ubuntu-24.04-arm, target: linux-arm64, flags: "--static-swift-stdlib" }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          persist-credentials: false
+      - if: runner.os == 'macOS'
+        run: sudo xcode-select -s /Applications/Xcode_26.6.app
+      - if: runner.os == 'Linux'
+        uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
+        with:
+          swift-version: "6.3.3"
+      - run: swift --version
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev pkg-config
+      # --force-resolved-versions: only what swift/Package.resolved pins.
+      - working-directory: swift
+        run: swift build -c release --force-resolved-versions ${{ matrix.flags }}
+      - working-directory: swift
+        run: swift test --force-resolved-versions
+      - name: package vault-${{ matrix.target }}
+        env:
+          FLAGS: ${{ matrix.flags }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          # shellcheck disable=SC2086 # FLAGS is a space-separated flag list
+          BIN="$(cd swift && swift build -c release --force-resolved-versions $FLAGS --show-bin-path)/vault"
+          mkdir -p dist
+          cp "$BIN" "dist/vault-$TARGET"
+          file "dist/vault-$TARGET"
+          "dist/vault-$TARGET" --version
+      - if: runner.os == 'Linux'
+        name: check no Swift runtime is linked dynamically
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          ldd "dist/vault-$TARGET" | tee ldd.txt
+          if grep -E 'libswift|libFoundation|lib_FoundationICU|libdispatch|libBlocksRuntime|not found' ldd.txt; then
+            echo "::error::vault-$TARGET links the Swift runtime dynamically (or has a missing library)"
+            exit 1
+          fi
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: vault-${{ matrix.target }}
+          path: dist/vault-${{ matrix.target }}
+          if-no-files-found: error
+          retention-days: 7
+
+  attest:
+    name: checksums + provenance
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      id-token: write # Sigstore signing certificate (OIDC)
+      attestations: write # store the attestation on the repo
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: vault-*
+          merge-multiple: true
+          path: dist
+      - name: write SHA256SUMS
+        working-directory: dist
+        run: |
+          for t in macos-arm64 linux-x64 linux-arm64; do
+            [ -f "vault-$t" ] || { echo "::error::missing vault-$t"; exit 1; }
+          done
+          sha256sum vault-macos-arm64 vault-linux-x64 vault-linux-arm64 > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/vault-macos-arm64
+            dist/vault-linux-x64
+            dist/vault-linux-arm64
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-assets
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: github release
+    needs: attest
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write # create the release and upload its assets
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: release-assets
+          path: dist
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          (cd dist && sha256sum -c SHA256SUMS)
+          prerelease=()
+          [[ "$GITHUB_REF_NAME" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$GITHUB_REF_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --generate-notes \
+            "${prerelease[@]}" \
+            dist/vault-macos-arm64 dist/vault-linux-x64 dist/vault-linux-arm64 dist/SHA256SUMS
