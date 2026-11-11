@@ -8,7 +8,7 @@
 #   target    macos-arm64 | linux-x64 | linux-arm64
 #   dest-dir  directory to install `vault` into (created if missing)
 #
-# Needs the GitHub CLI (`gh`), signed in, plus shasum (macOS) or sha256sum (Linux).
+# Needs the GitHub CLI (`gh`) 2.68.0 or newer, signed in, plus shasum (macOS) or sha256sum (Linux).
 #
 set -euo pipefail
 
@@ -41,6 +41,12 @@ esac
 [[ -n "$tag" && -n "$dest" ]] || usage
 
 command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is required"
+# gh attestation verify --source-ref needs gh 2.68.0 or newer.
+gh_version="$(gh --version | awk 'NR==1 {print $3}')"
+IFS=. read -r gh_major gh_minor _ <<<"$gh_version"
+if [[ ! "$gh_major" =~ ^[0-9]+$ || ! "$gh_minor" =~ ^[0-9]+$ ]] || ((gh_major < 2 || (gh_major == 2 && gh_minor < 68))); then
+	die "gh $gh_version is too old; attestation checks need gh 2.68.0 or newer"
+fi
 
 if [[ "$(uname -s)" == "Darwin" ]]; then
 	sha256() { shasum -a 256 "$1" | awk '{print $1}'; }
