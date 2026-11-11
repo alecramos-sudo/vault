@@ -59,7 +59,7 @@ let help = """
 	  run [--env <file>] [--allow-missing] [--mask] -- <cmd> [args...]
 	  run-only [enable]            Show or turn on run-only mode for this box: only run, list,
 	                               vaults, sync and enrollment work; run always masks.
-	                               Turn off by deleting <config>/run-only.
+	                               Also stamps each replica, so the flag follows the database.
 	  --passphrase-file <path>     Read the passphrase from a file (also $VAULT_PASSPHRASE_FILE).
 	                               Refuses symlinks, other owners and group/other permissions.
 
@@ -83,7 +83,15 @@ let help = """
 	"""
 
 func openStore(_ a: ParsedArgs) throws -> Store {
-	try Store(path: a.value("db") ?? dbPath(a.value("vault") ?? defaultVault))
+	let store = try Store(path: a.value("db") ?? dbPath(a.value("vault") ?? defaultVault))
+	// On a run-only box every replica opened gets the flag, including ones joined later.
+	if FileManager.default.fileExists(atPath: runOnlyMarkerPath()) {
+		do { try stampRunOnly(store) } catch {
+			store.close()
+			throw error
+		}
+	}
+	return store
 }
 
 func keyStore(for store: Store) async throws -> PlatformKeyStore? {
@@ -172,7 +180,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 			let on = isRunOnly(a)
 			emit("run-only: \(on ? "on" : "off")\n", [JSONMember("runOnly", .bool(on)), JSONMember("marker", .string(runOnlyMarkerPath()))])
 		case "enable":
-			try enableRunOnly()
+			try enableRunOnly(a)
 			emit("run-only: on (delete \(runOnlyMarkerPath()) to turn it off)\n", [JSONMember("runOnly", .bool(true)), JSONMember("marker", .string(runOnlyMarkerPath()))])
 		default:
 			throw VaultError.invalidArgument("usage: vault run-only [enable]")

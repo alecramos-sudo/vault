@@ -1,11 +1,4 @@
 import Foundation
-#if canImport(Darwin)
-	import Darwin
-#elseif canImport(Glibc)
-	import Glibc
-#elseif canImport(Musl)
-	import Musl
-#endif
 import VaultCore
 
 // OS config-dir resolution: VAULT_HOME, XDG_CONFIG_HOME, then
@@ -53,46 +46,43 @@ func listVaultNames() throws -> [String] {
 // command to turn it off: delete the file by hand.
 func runOnlyMarkerPath() -> String { (configDir() as NSString).appendingPathComponent("run-only") }
 
-// The replica a command would open (`--db`, else <config>/vaults/<--vault>.db), with
-// every symlink resolved. Creates nothing.
-private func effectiveDbPath(_ a: ParsedArgs) -> String? {
-	let raw: String
-	if let db = a.value("db") {
-		raw = db
-	} else {
-		guard let name = try? safeName(a.value("vault") ?? defaultVault) else { return nil }
-		raw = (((configDir() as NSString).appendingPathComponent("vaults")) as NSString).appendingPathComponent("\(name).db")
-	}
-	let abs = URL(fileURLWithPath: raw).standardizedFileURL.path
-	#if os(Windows)
-		return abs  // no run-only use on Windows; symlinks are not resolved there
-	#else
-		guard let real = realpath(abs, nil) else { return abs }  // not there yet: nothing to protect
-		defer { free(real) }
-		return String(cString: real)
-	#endif
-}
-
-// On when the marker is in the current config dir, or beside the real replica the
-// command would open (its directory or that directory's parent, i.e. <config>), so
-// moving VAULT_HOME / XDG_CONFIG_HOME or reaching the replica through a symlink does
-// not skip it. A byte-for-byte copy of the replica elsewhere still does: this guards
-// against accidents, not against someone who already holds the passphrase file.
+// Run-only is on when the box-wide marker is in the current config dir, or when the
+// replica this command would open carries the `runOnly` flag in its own metadata. The
+// flag lives inside the database, so it follows the replica through any path to it
+// (symlink, hard link, `..`, a moved VAULT_HOME, even a copy). Editing the database to
+// clear it is deliberate tampering, which this mode does not claim to stop.
 func isRunOnly(_ a: ParsedArgs? = nil) -> Bool {
-	var markers = [runOnlyMarkerPath()]
-	if let a, let db = effectiveDbPath(a) {
-		let dir = (db as NSString).deletingLastPathComponent
-		markers.append((dir as NSString).appendingPathComponent("run-only"))
-		markers.append(((dir as NSString).deletingLastPathComponent as NSString).appendingPathComponent("run-only"))
+	if FileManager.default.fileExists(atPath: runOnlyMarkerPath()) { return true }
+	guard let a else { return false }
+	let path = a.value("db") ?? (try? safeName(a.value("vault") ?? defaultVault)).map {
+		(((configDir() as NSString).appendingPathComponent("vaults")) as NSString).appendingPathComponent("\($0).db")
 	}
-	return markers.contains { FileManager.default.fileExists(atPath: $0) }
+	guard let path, FileManager.default.fileExists(atPath: path), let store = try? Store(path: path) else { return false }
+	defer { store.close() }
+	return (try? store.meta(runOnlyMetaKey)) == "1"
 }
 
-func enableRunOnly() throws {
+let runOnlyMetaKey = "fleet.runOnly"
+
+// Stamp a replica as run-only (idempotent).
+func stampRunOnly(_ store: Store) throws {
+	if try store.meta(runOnlyMetaKey) != "1" { try store.setMeta(runOnlyMetaKey, "1") }
+}
+
+// Writes the box-wide marker and stamps every replica in the config dir, plus an
+// explicit `--db`. Replicas opened later on this box are stamped by `openStore`.
+func enableRunOnly(_ a: ParsedArgs) throws {
 	_ = try vaultsDir()  // creates the config dir at 0700
 	let path = runOnlyMarkerPath()
 	guard FileManager.default.createFile(atPath: path, contents: Data("run-only\n".utf8), attributes: [.posixPermissions: 0o600])
 	else { throw VaultError.invalidArgument("cannot write \(path)") }
+	var dbs = try listVaultNames().map { try dbPath($0) }
+	if let db = a.value("db") { dbs.append(db) }
+	for db in dbs where FileManager.default.fileExists(atPath: db) {
+		let store = try Store(path: db)
+		defer { store.close() }
+		try stampRunOnly(store)
+	}
 }
 
 // Commands allowed on a run-only box: none of them prints an item's value.

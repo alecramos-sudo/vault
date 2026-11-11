@@ -24,6 +24,27 @@ import Testing
 		#expect(s.scrub("x abcd-secret-123 y ab") == "x [REDACTED] y [REDACTED]")
 	}
 
+	@Test func overlappingSecretsAreCoveredAsOneSpan() {
+		let s = Scrubber()
+		s.register("ab", force: true)
+		s.register("bcd-secret-123", force: true)
+		#expect(s.scrub("abcd-secret-123") == "[REDACTED]")
+		#expect(s.scrub("x ab y bcd-secret-123 z") == "x [REDACTED] y [REDACTED] z")
+		let text = Array("..abcd-secret-123..ab".utf8)
+		let whole = s.scrub(String(decoding: text, as: UTF8.self))
+		for size in 1...text.count {
+			let st = s.stream()
+			var out = Data()
+			var i = 0
+			while i < text.count {
+				out += st.feed(Data(text[i..<min(i + size, text.count)]))
+				i += size
+			}
+			out += st.flush()
+			#expect(String(decoding: out, as: UTF8.self) == whole, "chunk \(size)")
+		}
+	}
+
 	@Test func markersAreNeverRescanned() {
 		let s = Scrubber()
 		for c in ["R", "E", "D", "A", "C", "T"] { s.register(c, force: true) }
@@ -136,11 +157,21 @@ extension Data {
 			try fm.createSymbolicLink(atPath: other + "/alias.db", withDestinationPath: h + "/vaults/personal.db")
 			try fm.createSymbolicLink(atPath: other + "/replicas", withDestinationPath: h + "/vaults")
 			try fm.createSymbolicLink(atPath: other + "/vaults", withDestinationPath: h + "/vaults")
+			try fm.createDirectory(atPath: other + "/xdg/vault", withIntermediateDirectories: true)
+			try fm.createSymbolicLink(atPath: other + "/xdg/vault/vaults", withDestinationPath: h + "/vaults")
+			try fm.linkItem(atPath: h + "/vaults/personal.db", toPath: other + "/hard.db")
+			try fm.copyItem(atPath: h + "/vaults/personal.db", toPath: other + "/copy.db")
+			try fm.createDirectory(atPath: h + "/vaults/sub", withIntermediateDirectories: true)
+			try fm.createSymbolicLink(atPath: other + "/up", withDestinationPath: h + "/vaults/sub")
 			let get = ["get", "--field", "password", "--", "store"]
 			for (extra, env) in [
 				(["--db", other + "/alias.db"], ["VAULT_HOME": other]),
 				(["--db", other + "/replicas/personal.db"], ["VAULT_HOME": other]),
 				(["--vault", "personal"], ["VAULT_HOME": other]),
+				(["--vault", "personal"], ["XDG_CONFIG_HOME": other + "/xdg", "VAULT_HOME": ""]),
+				(["--db", other + "/hard.db"], ["VAULT_HOME": other]),
+				(["--db", other + "/copy.db"], ["VAULT_HOME": other]),
+				(["--db", other + "/up/../personal.db"], ["VAULT_HOME": other]),
 			] {
 				let r = await VaultCommands.execute(["--json", "--passphrase-stdin"] + extra + get, secrets: ["pw"], environment: env)
 				#expect(r.exitCode == 1 && r.stdout.contains("run-only"), "\(extra)")
