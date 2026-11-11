@@ -307,20 +307,34 @@ public final class Store: @unchecked Sendable {
 		try run("DELETE FROM meta WHERE k = ?", [.text(k)])
 	}
 
-	// Read one meta value without changing the file: a read-only open, no schema, no
-	// chmod, no journal-mode switch. Nil when the file is not a replica or can't be read.
-	public static func peekMeta(path: String, _ k: String) -> String? {
+	// Read one meta value without changing the file: no create, no schema, no chmod, no
+	// journal-mode switch, only a SELECT. (A READONLY open can't read a WAL database
+	// whose -shm is gone, so the connection is read-write but never writes.) Returns nil only when the key is confirmed absent;
+	// any failure to read (busy, locked, not a replica, I/O) throws, so callers can
+	// fail closed instead of reading a failed probe as "flag not set".
+	public static func peekMeta(path: String, _ k: String) throws -> String? {
 		var handle: OpaquePointer?
 		defer { sqlite3_close(handle) }
-		guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let h = handle else { return nil }
+		guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READWRITE, nil) == SQLITE_OK, let h = handle else {
+			throw StoreError(description: "cannot open database")
+		}
+		sqlite3_busy_timeout(h, 5000)
 		var stmt: OpaquePointer?
-		guard sqlite3_prepare_v2(h, "SELECT v FROM meta WHERE k = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
+		guard sqlite3_prepare_v2(h, "SELECT v FROM meta WHERE k = ?", -1, &stmt, nil) == SQLITE_OK else {
+			throw StoreError(description: "cannot read meta: \(String(cString: sqlite3_errmsg(h)))")
+		}
 		defer { sqlite3_finalize(stmt) }
 		let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
-		guard sqlite3_bind_text(stmt, 1, k, -1, transient) == SQLITE_OK, sqlite3_step(stmt) == SQLITE_ROW,
-			let c = sqlite3_column_text(stmt, 0)
-		else { return nil }
-		return String(cString: c)
+		guard sqlite3_bind_text(stmt, 1, k, -1, transient) == SQLITE_OK else { throw StoreError(description: "cannot bind meta key") }
+		switch sqlite3_step(stmt) {
+		case SQLITE_ROW:
+			guard let c = sqlite3_column_text(stmt, 0) else { return nil }
+			return String(cString: c)
+		case SQLITE_DONE:
+			return nil
+		default:
+			throw StoreError(description: "cannot read meta: \(String(cString: sqlite3_errmsg(h)))")
+		}
 	}
 
 	public func meta(_ k: String) throws -> String? {

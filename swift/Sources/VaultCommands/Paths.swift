@@ -42,8 +42,9 @@ func listVaultNames() throws -> [String] {
 // Run-only box (fleet): a marker file in the config dir. While it exists, only the
 // commands that never print a secret run, `run` masks child output, and a `.env`
 // may not declare the vault's own credential names. It guards against accidents by
-// an agent on the box, not against someone who can delete the file. There is no
-// command to turn it off: delete the file by hand.
+// an agent on the box, not against someone who can edit the files. There is no
+// command to turn it off: deleting the marker stops new replicas being stamped, but
+// replicas already stamped stay run-only (the flag lives in their metadata).
 func runOnlyMarkerPath() -> String { (configDir() as NSString).appendingPathComponent("run-only") }
 
 // Run-only is on when the box-wide marker is in the current config dir, or when the
@@ -58,7 +59,10 @@ func isRunOnly(_ a: ParsedArgs? = nil) -> Bool {
 		(((configDir() as NSString).appendingPathComponent("vaults")) as NSString).appendingPathComponent("\($0).db")
 	}
 	guard let path, FileManager.default.fileExists(atPath: path) else { return false }
-	return Store.peekMeta(path: path, runOnlyMetaKey) == "1"  // read-only: probing never changes the file
+	// Read-only, so probing never changes the file. A probe that fails (busy, locked,
+	// unreadable) counts as run-only: fail closed rather than allow a printing command.
+	// do/catch, not `try?`: `try?` would flatten "flag absent" (nil) into a failure.
+	do { return try Store.peekMeta(path: path, runOnlyMetaKey) == "1" } catch { return true }
 }
 
 let runOnlyMetaKey = "fleet.runOnly"

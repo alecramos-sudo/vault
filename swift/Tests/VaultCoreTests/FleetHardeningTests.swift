@@ -118,6 +118,7 @@ extension Data {
 }
 
 #if !os(Windows)
+	import CSQLite
 	@testable import VaultCommands
 
 	@Suite struct FleetCommandTests {
@@ -191,7 +192,25 @@ extension Data {
 			let before = try Data(contentsOf: URL(fileURLWithPath: other))
 			_ = await run(h, ["list", "--db", other], ["pw"], stdin: true)
 			#expect(try Data(contentsOf: URL(fileURLWithPath: other)) == before)
-			#expect(Store.peekMeta(path: other, runOnlyMetaKey) == nil)
+			#expect(throws: StoreError.self) { try Store.peekMeta(path: other, runOnlyMetaKey) }
+		}
+
+		@Test func aFailedProbeFailsClosed() async throws {
+			let h = home()
+			defer { try? FileManager.default.removeItem(atPath: h) }
+			#expect(await run(h, ["init"], ["pw"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["add", "--field-stdin", "1", "--", "store"], ["pw", "password=value-1"], stdin: true).exitCode == 0)
+			let db = h + "/vaults/personal.db"
+			#expect(try Store.peekMeta(path: db, runOnlyMetaKey) == nil)  // confirmed absent: not run-only
+			// Hold an exclusive lock so the probe cannot read; it must count as run-only.
+			var lock: OpaquePointer?
+			#expect(sqlite3_open(db, &lock) == SQLITE_OK)
+			defer { sqlite3_close(lock) }
+			sqlite3_exec(lock, "PRAGMA locking_mode = EXCLUSIVE; BEGIN EXCLUSIVE;", nil, nil, nil)
+			var args = ParsedArgs()
+			args.values["db"] = [db]
+			#expect(isRunOnly(args))
+			sqlite3_exec(lock, "ROLLBACK;", nil, nil, nil)
 		}
 
 		@Test func runOnlyRefusesProxy() async throws {

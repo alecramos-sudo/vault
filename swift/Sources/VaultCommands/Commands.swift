@@ -187,7 +187,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 			emit("run-only: \(on ? "on" : "off")\n", [JSONMember("runOnly", .bool(on)), JSONMember("marker", .string(runOnlyMarkerPath()))])
 		case "enable":
 			try enableRunOnly(a)
-			emit("run-only: on (delete \(runOnlyMarkerPath()) to turn it off)\n", [JSONMember("runOnly", .bool(true)), JSONMember("marker", .string(runOnlyMarkerPath()))])
+			emit("run-only: on (replicas are stamped and stay run-only; deleting \(runOnlyMarkerPath()) only stops stamping new ones)\n", [JSONMember("runOnly", .bool(true)), JSONMember("marker", .string(runOnlyMarkerPath()))])
 		default:
 			throw VaultError.invalidArgument("usage: vault run-only [enable]")
 		}
