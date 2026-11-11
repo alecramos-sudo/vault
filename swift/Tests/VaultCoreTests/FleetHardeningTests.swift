@@ -192,7 +192,24 @@ extension Data {
 			let before = try Data(contentsOf: URL(fileURLWithPath: other))
 			_ = await run(h, ["list", "--db", other], ["pw"], stdin: true)
 			#expect(try Data(contentsOf: URL(fileURLWithPath: other)) == before)
-			#expect(throws: StoreError.self) { try Store.peekMeta(path: other, runOnlyMetaKey) }
+			#expect(try Store.peekMeta(path: other, runOnlyMetaKey) == nil)  // not a database: can't carry the flag
+		}
+
+		// The relay runs `vault relay --db <relay.db>`: a SQLite file with no meta table.
+		// It must not read as run-only, or the relay refuses to start (v0.5.0-fleet.1).
+		@Test func aRelayDatabaseIsNotRunOnly() async throws {
+			let h = home()
+			defer { try? FileManager.default.removeItem(atPath: h) }
+			try FileManager.default.createDirectory(atPath: h, withIntermediateDirectories: true)
+			let relay = h + "/relay.db"
+			var db: OpaquePointer?
+			#expect(sqlite3_open(relay, &db) == SQLITE_OK)
+			sqlite3_exec(db, "CREATE TABLE ops (id TEXT); PRAGMA journal_mode = WAL;", nil, nil, nil)
+			sqlite3_close(db)
+			#expect(try Store.peekMeta(path: relay, runOnlyMetaKey) == nil)
+			var args = ParsedArgs()
+			args.values["db"] = [relay]
+			#expect(!isRunOnly(args))
 		}
 
 		@Test func aFailedProbeFailsClosed() async throws {
