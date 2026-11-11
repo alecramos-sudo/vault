@@ -10,6 +10,7 @@ public final class CommandContext: @unchecked Sendable {
 	private let lock = NSLock()
 	private var _json = false
 	private var _stdinSecrets = false
+	private var _passphraseFile: String?
 	private var _queue: [String]?
 
 	let environment: [String: String]
@@ -33,6 +34,10 @@ public final class CommandContext: @unchecked Sendable {
 	var stdinSecrets: Bool {
 		get { lock.withLock { _stdinSecrets } }
 		set { lock.withLock { _stdinSecrets = newValue } }
+	}
+	var passphraseFile: String? {
+		get { lock.withLock { _passphraseFile } }
+		set { lock.withLock { _passphraseFile = newValue } }
 	}
 	// In-process secrets, consumed one per prompt in the order a command asks.
 	func nextSecret() -> String? {

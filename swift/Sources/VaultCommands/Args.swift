@@ -17,7 +17,7 @@ private let booleanFlags: Set<String> = ["json", "passphrase-stdin", "password",
 private let valueFlags: Set<String> = [
 	"db", "vault", "field", "type", "field-stdin", "name", "device", "user", "token", "token-file", "relay",
 	"relay-token-file", "access-id", "access-secret-file", "role", "org-key-file", "env", "with-key", "port",
-	"peer-token-file", "peer", "config", "host",
+	"peer-token-file", "peer", "config", "host", "passphrase-file",
 ]
 
 func parseArgs(_ argv: [String]) throws -> ParsedArgs {

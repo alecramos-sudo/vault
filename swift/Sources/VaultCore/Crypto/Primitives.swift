@@ -86,7 +86,11 @@ public enum VaultCrypto {
 			let priv = try Curve25519.KeyAgreement.PrivateKey(rawRepresentation: privSeed)
 			let pub = try Curve25519.KeyAgreement.PublicKey(rawRepresentation: peerPub)
 			let shared = try priv.sharedSecretFromKeyAgreement(with: pub)
-			return shared.withUnsafeBytes { Data($0) }
+			let bytes = shared.withUnsafeBytes { Data($0) }
+			// A low-order peer key yields an all-zero secret. Refuse it here rather than
+			// trusting every backend (CryptoKit, BoringSSL) to.
+			guard bytes.reduce(0, |) != 0 else { throw VaultCryptoError.invalidKey }
+			return bytes
 		} catch {
 			throw VaultCryptoError.invalidKey
 		}
