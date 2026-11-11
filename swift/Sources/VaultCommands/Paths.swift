@@ -57,9 +57,8 @@ func isRunOnly(_ a: ParsedArgs? = nil) -> Bool {
 	let path = a.value("db") ?? (try? safeName(a.value("vault") ?? defaultVault)).map {
 		(((configDir() as NSString).appendingPathComponent("vaults")) as NSString).appendingPathComponent("\($0).db")
 	}
-	guard let path, FileManager.default.fileExists(atPath: path), let store = try? Store(path: path) else { return false }
-	defer { store.close() }
-	return (try? store.meta(runOnlyMetaKey)) == "1"
+	guard let path, FileManager.default.fileExists(atPath: path) else { return false }
+	return Store.peekMeta(path: path, runOnlyMetaKey) == "1"  // read-only: probing never changes the file
 }
 
 let runOnlyMetaKey = "fleet.runOnly"
@@ -73,9 +72,8 @@ func stampRunOnly(_ store: Store) throws {
 // explicit `--db`. Replicas opened later on this box are stamped by `openStore`.
 func enableRunOnly(_ a: ParsedArgs) throws {
 	_ = try vaultsDir()  // creates the config dir at 0700
-	let path = runOnlyMarkerPath()
-	guard FileManager.default.createFile(atPath: path, contents: Data("run-only\n".utf8), attributes: [.posixPermissions: 0o600])
-	else { throw VaultError.invalidArgument("cannot write \(path)") }
+	// Stamp every replica first, then write the marker: a failure part way leaves no
+	// marker claiming the box is run-only while some replica is still unstamped.
 	var dbs = try listVaultNames().map { try dbPath($0) }
 	if let db = a.value("db") { dbs.append(db) }
 	for db in dbs where FileManager.default.fileExists(atPath: db) {
@@ -83,6 +81,9 @@ func enableRunOnly(_ a: ParsedArgs) throws {
 		defer { store.close() }
 		try stampRunOnly(store)
 	}
+	let path = runOnlyMarkerPath()
+	guard FileManager.default.createFile(atPath: path, contents: Data("run-only\n".utf8), attributes: [.posixPermissions: 0o600])
+	else { throw VaultError.invalidArgument("cannot write \(path)") }
 }
 
 // Commands allowed on a run-only box: none of them prints an item's value.

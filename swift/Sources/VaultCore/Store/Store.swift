@@ -307,6 +307,22 @@ public final class Store: @unchecked Sendable {
 		try run("DELETE FROM meta WHERE k = ?", [.text(k)])
 	}
 
+	// Read one meta value without changing the file: a read-only open, no schema, no
+	// chmod, no journal-mode switch. Nil when the file is not a replica or can't be read.
+	public static func peekMeta(path: String, _ k: String) -> String? {
+		var handle: OpaquePointer?
+		defer { sqlite3_close(handle) }
+		guard sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let h = handle else { return nil }
+		var stmt: OpaquePointer?
+		guard sqlite3_prepare_v2(h, "SELECT v FROM meta WHERE k = ?", -1, &stmt, nil) == SQLITE_OK else { return nil }
+		defer { sqlite3_finalize(stmt) }
+		let transient = unsafeBitCast(-1, to: sqlite3_destructor_type.self)
+		guard sqlite3_bind_text(stmt, 1, k, -1, transient) == SQLITE_OK, sqlite3_step(stmt) == SQLITE_ROW,
+			let c = sqlite3_column_text(stmt, 0)
+		else { return nil }
+		return String(cString: c)
+	}
+
 	public func meta(_ k: String) throws -> String? {
 		var v: String?
 		try run("SELECT v FROM meta WHERE k = ?", [.text(k)]) { v = Store.text($0, 0) }

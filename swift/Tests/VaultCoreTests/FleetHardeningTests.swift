@@ -181,6 +181,19 @@ extension Data {
 			}
 		}
 
+		@Test func probingRunOnlyNeverChangesTheFile() async throws {
+			let h = home()
+			defer { try? FileManager.default.removeItem(atPath: h) }
+			try FileManager.default.createDirectory(atPath: h, withIntermediateDirectories: true)
+			let other = h + "/relay.db"
+			try Data("not a replica".utf8).write(to: URL(fileURLWithPath: other))
+			try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: other)
+			let before = try Data(contentsOf: URL(fileURLWithPath: other))
+			_ = await run(h, ["list", "--db", other], ["pw"], stdin: true)
+			#expect(try Data(contentsOf: URL(fileURLWithPath: other)) == before)
+			#expect(Store.peekMeta(path: other, runOnlyMetaKey) == nil)
+		}
+
 		@Test func runOnlyRefusesProxy() async throws {
 			let h = home()
 			defer { try? FileManager.default.removeItem(atPath: h) }
