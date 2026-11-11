@@ -41,7 +41,7 @@ jobs:
           swift-version: "6.3.3"
       - run: swift --version
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev pkg-config
       # --force-resolved-versions: only what swift/Package.resolved pins.
       - working-directory: swift
         run: swift build -c release --force-resolved-versions ${{ matrix.flags }}

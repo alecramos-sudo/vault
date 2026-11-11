@@ -133,7 +133,7 @@ jobs:
           swift-version: "6.3.3"
       - run: swift --version
       - if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install -y libsqlite3-dev libcurl4-openssl-dev pkg-config
       # --force-resolved-versions: build only what swift/Package.resolved pins; fail
       # instead of resolving anything new.
       - working-directory: swift
@@ -177,7 +177,7 @@ jobs:
       - uses: SwiftyLab/setup-swift@d60245579ea3836a3f2fa65ebbe1e8891d577c76 # v1.14.2
         with:
           swift-version: "6.3.3"
-      - run: sudo apt-get update && sudo apt-get install -y swtpm swtpm-tools tpm2-tools libsqlite3-dev pkg-config
+      - run: sudo apt-get update && sudo apt-get install -y swtpm swtpm-tools tpm2-tools libsqlite3-dev libcurl4-openssl-dev pkg-config
       - name: start swtpm
         run: |
           mkdir -p "$RUNNER_TEMP/tpm"
