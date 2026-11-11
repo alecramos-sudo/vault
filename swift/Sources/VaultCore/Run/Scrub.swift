@@ -51,26 +51,34 @@ public final class Scrubber: @unchecked Sendable {
 		add(Data(value.utf8).base64)  // Basic-auth form
 	}
 
-	private static func replaceAll(_ hay: [UInt8], _ needle: [UInt8]) -> [UInt8] {
-		guard !needle.isEmpty, hay.count >= needle.count else { return hay }
+	// One left-to-right pass over the ORIGINAL bytes, taking the longest pattern that
+	// matches at each position. Markers are emitted, never rescanned, so a short
+	// pattern can neither split a longer secret nor match inside "[REDACTED]". New
+	// matches start only before `limit`; returns the output and where it stopped.
+	fileprivate func redactPrefix(_ hay: [UInt8], upTo limit: Int) -> ([UInt8], Int) {
+		let marker = Array(Self.redaction.utf8)
 		var out: [UInt8] = []
 		out.reserveCapacity(hay.count)
-		let marker = Array(redaction.utf8)
 		var i = 0
-		while i < hay.count {
-			if i + needle.count <= hay.count, hay[i] == needle[0], hay[i..<i + needle.count].elementsEqual(needle) {
+		while i < limit {
+			var best = 0
+			for p in patterns where p.count > best && i + p.count <= hay.count && hay[i] == p[0] && hay[i..<i + p.count].elementsEqual(p) {
+				best = p.count
+			}
+			if best > 0 {
 				out += marker
-				i += needle.count
+				i += best
 			} else {
 				out.append(hay[i])
 				i += 1
 			}
 		}
-		return out
+		return (out, i)
 	}
 
 	private func redact(_ bytes: [UInt8]) -> [UInt8] {
-		patterns.reduce(bytes) { Self.replaceAll($0, $1) }
+		guard !patterns.isEmpty else { return bytes }
+		return redactPrefix(bytes, upTo: bytes.count).0
 	}
 
 	// Scrub a short string (error messages, audit lines).
@@ -87,31 +95,26 @@ public final class Scrubber: @unchecked Sendable {
 		private var carry: [UInt8] = []
 		init(_ o: Scrubber) { owner = o }
 
+		// Holds back raw input (never redacted output): a match can only start where
+		// every pattern still fits inside what has arrived, so the result equals one
+		// pass over the whole stream.
 		public func feed(_ chunk: Data) -> Data {
 			owner.lock.lock()
 			defer { owner.lock.unlock() }
 			if owner.patterns.isEmpty && carry.isEmpty { return chunk }
-			let redacted = owner.redact(carry + Array(chunk))
+			let buf = carry + Array(chunk)
 			let maxLen = owner.patterns.map(\.count).max() ?? 0
-			let firsts = Set(owner.patterns.compactMap(\.first))
-			let keep = maxLen > 1 ? maxLen - 1 : 0
-			var cut = redacted.count
-			var i = max(0, redacted.count - keep)
-			while i < redacted.count {
-				if firsts.contains(redacted[i]) {
-					cut = i
-					break
-				}
-				i += 1
-			}
-			carry = Array(redacted[cut...])
-			return Data(redacted[..<cut])
+			let (out, next) = owner.redactPrefix(buf, upTo: buf.count - max(0, maxLen - 1))
+			carry = Array(buf[next...])
+			return Data(out)
 		}
 
 		public func flush() -> Data {
-			let out = Data(carry)
+			owner.lock.lock()
+			defer { owner.lock.unlock() }
+			let out = owner.redact(carry)
 			carry = []
-			return out
+			return Data(out)
 		}
 	}
 

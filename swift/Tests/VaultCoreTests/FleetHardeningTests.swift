@@ -16,6 +16,45 @@ import Testing
 	}
 }
 
+@Suite struct SinglePassScrubTests {
+	@Test func shortPatternCannotSplitALongerSecret() {
+		let s = Scrubber()
+		s.register("ab", force: true)
+		s.register("abcd-secret-123", force: true)
+		#expect(s.scrub("x abcd-secret-123 y ab") == "x [REDACTED] y [REDACTED]")
+	}
+
+	@Test func markersAreNeverRescanned() {
+		let s = Scrubber()
+		for c in ["R", "E", "D", "A", "C", "T"] { s.register(c, force: true) }
+		#expect(s.scrub("R") == "[REDACTED]")
+		let st = s.stream()
+		var out = st.feed(Data("E".utf8))
+		out += st.feed(Data("\n".utf8))
+		out += st.flush()
+		#expect(String(decoding: out, as: UTF8.self) == "[REDACTED]\n")
+	}
+
+	@Test func streamEqualsOnePassAcrossEveryChunking() {
+		let s = Scrubber()
+		s.register("ab", force: true)
+		s.register("abcd-secret-123", force: true)
+		let text = Array("..abcd-secret-123..ab.abcd-secret-12.ab".utf8)
+		let whole = s.scrub(String(decoding: text, as: UTF8.self))
+		for size in 1...text.count {
+			let st = s.stream()
+			var out = Data()
+			var i = 0
+			while i < text.count {
+				out += st.feed(Data(text[i..<min(i + size, text.count)]))
+				i += size
+			}
+			out += st.flush()
+			#expect(String(decoding: out, as: UTF8.self) == whole, "chunk \(size)")
+		}
+	}
+}
+
 @Suite struct LowOrderPointTests {
 	// Curve25519 u-coordinates of small order, little-endian: 0, 1, and a point of order 8.
 	// Each makes the X25519 shared secret all zeros, whatever the private key.
@@ -81,6 +120,32 @@ extension Data {
 				["--json", "--passphrase-stdin", "--db", db, "get", "--field", "password", "--", "store"], secrets: ["pw"], environment: ["VAULT_HOME": other])
 			#expect(r.exitCode == 1 && r.stdout.contains("run-only"))
 			#expect(!r.stdout.contains("value-1"))
+		}
+
+		@Test func runOnlyHoldsThroughSymlinkedReplicas() async throws {
+			let h = home(), other = home()
+			defer {
+				try? FileManager.default.removeItem(atPath: h)
+				try? FileManager.default.removeItem(atPath: other)
+			}
+			#expect(await run(h, ["init"], ["pw"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["add", "--field-stdin", "1", "--", "store"], ["pw", "password=value-1"], stdin: true).exitCode == 0)
+			#expect(await run(h, ["run-only", "enable"]).exitCode == 0)
+			let fm = FileManager.default
+			try fm.createDirectory(atPath: other, withIntermediateDirectories: true)
+			try fm.createSymbolicLink(atPath: other + "/alias.db", withDestinationPath: h + "/vaults/personal.db")
+			try fm.createSymbolicLink(atPath: other + "/replicas", withDestinationPath: h + "/vaults")
+			try fm.createSymbolicLink(atPath: other + "/vaults", withDestinationPath: h + "/vaults")
+			let get = ["get", "--field", "password", "--", "store"]
+			for (extra, env) in [
+				(["--db", other + "/alias.db"], ["VAULT_HOME": other]),
+				(["--db", other + "/replicas/personal.db"], ["VAULT_HOME": other]),
+				(["--vault", "personal"], ["VAULT_HOME": other]),
+			] {
+				let r = await VaultCommands.execute(["--json", "--passphrase-stdin"] + extra + get, secrets: ["pw"], environment: env)
+				#expect(r.exitCode == 1 && r.stdout.contains("run-only"), "\(extra)")
+				#expect(!r.stdout.contains("value-1"))
+			}
 		}
 
 		@Test func runOnlyRefusesProxy() async throws {

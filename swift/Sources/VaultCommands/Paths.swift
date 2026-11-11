@@ -1,4 +1,11 @@
 import Foundation
+#if canImport(Darwin)
+	import Darwin
+#elseif canImport(Glibc)
+	import Glibc
+#elseif canImport(Musl)
+	import Musl
+#endif
 import VaultCore
 
 // OS config-dir resolution: VAULT_HOME, XDG_CONFIG_HOME, then
@@ -46,13 +53,35 @@ func listVaultNames() throws -> [String] {
 // command to turn it off: delete the file by hand.
 func runOnlyMarkerPath() -> String { (configDir() as NSString).appendingPathComponent("run-only") }
 
-// On when the marker is in the current config dir, or in the config dir of an explicit
-// `--db` (<config>/vaults/<name>.db), so pointing VAULT_HOME elsewhere while opening the
-// protected replica by path does not skip it.
+// The replica a command would open (`--db`, else <config>/vaults/<--vault>.db), with
+// every symlink resolved. Creates nothing.
+private func effectiveDbPath(_ a: ParsedArgs) -> String? {
+	let raw: String
+	if let db = a.value("db") {
+		raw = db
+	} else {
+		guard let name = try? safeName(a.value("vault") ?? defaultVault) else { return nil }
+		raw = (((configDir() as NSString).appendingPathComponent("vaults")) as NSString).appendingPathComponent("\(name).db")
+	}
+	let abs = URL(fileURLWithPath: raw).standardizedFileURL.path
+	#if os(Windows)
+		return abs  // no run-only use on Windows; symlinks are not resolved there
+	#else
+		guard let real = realpath(abs, nil) else { return abs }  // not there yet: nothing to protect
+		defer { free(real) }
+		return String(cString: real)
+	#endif
+}
+
+// On when the marker is in the current config dir, or beside the real replica the
+// command would open (its directory or that directory's parent, i.e. <config>), so
+// moving VAULT_HOME / XDG_CONFIG_HOME or reaching the replica through a symlink does
+// not skip it. A byte-for-byte copy of the replica elsewhere still does: this guards
+// against accidents, not against someone who already holds the passphrase file.
 func isRunOnly(_ a: ParsedArgs? = nil) -> Bool {
 	var markers = [runOnlyMarkerPath()]
-	if let db = a?.value("db") {
-		let dir = (URL(fileURLWithPath: db).standardizedFileURL.path as NSString).deletingLastPathComponent
+	if let a, let db = effectiveDbPath(a) {
+		let dir = (db as NSString).deletingLastPathComponent
 		markers.append((dir as NSString).appendingPathComponent("run-only"))
 		markers.append(((dir as NSString).deletingLastPathComponent as NSString).appendingPathComponent("run-only"))
 	}
