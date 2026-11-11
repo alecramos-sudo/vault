@@ -169,6 +169,12 @@ func run(_ argv: [String]) async throws -> Int32 {
 	}
 	let rest = Array(a.positionals.dropFirst())
 
+	// SQLite reads "file:..." as a URI, so the same replica could be reached by a string
+	// that is not its path, and every path-based check (run-only, existence) would miss
+	// it. Replicas are plain paths here.
+	if let db = a.value("db"), db.lowercased().hasPrefix("file:") {
+		throw VaultError.invalidArgument("--db takes a file path, not a SQLite URI")
+	}
 	if isRunOnly(a), !runOnlyCommands.contains(command) {
 		throw VaultError.notAuthorized("this box is run-only: '\(command)' is disabled (use 'vault run -- <cmd>')")
 	}

@@ -172,9 +172,11 @@ extension Data {
 				(["--db", other + "/hard.db"], ["VAULT_HOME": other]),
 				(["--db", other + "/copy.db"], ["VAULT_HOME": other]),
 				(["--db", other + "/up/../personal.db"], ["VAULT_HOME": other]),
+				(["--db", "file:" + h + "/vaults/personal.db?mode=rw"], ["VAULT_HOME": other]),
+				(["--db", "FILE:" + h + "/vaults/personal.db"], ["VAULT_HOME": other]),
 			] {
 				let r = await VaultCommands.execute(["--json", "--passphrase-stdin"] + extra + get, secrets: ["pw"], environment: env)
-				#expect(r.exitCode == 1 && r.stdout.contains("run-only"), "\(extra)")
+				#expect(r.exitCode == 1 && (r.stdout.contains("run-only") || r.stdout.contains("not a SQLite URI")), "\(extra)")
 				#expect(!r.stdout.contains("value-1"))
 			}
 		}
