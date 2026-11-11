@@ -18,9 +18,22 @@ private final class Sink: ChannelInboundHandler, @unchecked Sendable {
 	typealias InboundIn = ByteBuffer
 	private let l = NSLock()
 	private(set) var closed = false
+	private var read = false
 	func channelInactive(context: ChannelHandlerContext) { l.lock(); closed = true; l.unlock() }
-	func channelRead(context: ChannelHandlerContext, data: NIOAny) {}
+	func channelRead(context: ChannelHandlerContext, data: NIOAny) { l.lock(); read = true; l.unlock() }
 	var isClosed: Bool { l.lock(); defer { l.unlock() }; return closed }
+	var gotReply: Bool { l.lock(); defer { l.unlock() }; return read }
+}
+
+// Proves the server admitted and is serving this connection: it answered a keep-alive request.
+private func waitServed(_ ch: Channel, _ s: Sink, seconds: Double) async throws -> Bool {
+	try await ch.writeAndFlush(ByteBuffer(string: "GET / HTTP/1.1\r\nHost: x\r\n\r\n")).get()
+	let end = Date().addingTimeInterval(seconds)
+	while Date() < end {
+		if s.gotReply { return true }
+		try? await Task.sleep(nanoseconds: 20_000_000)
+	}
+	return s.gotReply
 }
 
 private func open(_ group: EventLoopGroup, _ port: Int) async throws -> (Channel, Sink) {
@@ -57,24 +70,36 @@ private func waitClosed(_ s: Sink, seconds: Double) async -> Bool {
 	}
 
 	@Test func slowAndIdleClientsAreDroppedAndConnectionsAreCapped() async throws {
+		// Each check gets its own server where only the limit under test is short. With one
+		// server and 1s timers everywhere, a parallel suite on a 3-4 vCPU runner can stall the
+		// test past a timer it is not testing: the idle timer closed the slowloris socket before
+		// its first write, and idled out the connections the cap check needs held open.
 		let group = MultiThreadedEventLoopGroup(numberOfThreads: 1)
-		let server = try await HTTPServer.start(host: "127.0.0.1", port: 0, maxConnections: 2, idleSeconds: 1, requestSeconds: 1) { _ in .json(200, Data("{}".utf8)) }
-		defer { Task { await server.stop(); try? await group.shutdownGracefully() } }
+		let ok: @Sendable (HTTPRequestData) async -> HTTPReplyData = { _ in .json(200, Data("{}".utf8)) }
+		let idleServer = try await HTTPServer.start(host: "127.0.0.1", port: 0, idleSeconds: 1, requestSeconds: 60, handler: ok)
+		let slowServer = try await HTTPServer.start(host: "127.0.0.1", port: 0, idleSeconds: 60, requestSeconds: 1, handler: ok)
+		let capped = try await HTTPServer.start(host: "127.0.0.1", port: 0, maxConnections: 2, idleSeconds: 60, requestSeconds: 60, handler: ok)
+		defer { Task { await idleServer.stop(); await slowServer.stop(); await capped.stop(); try? await group.shutdownGracefully() } }
 
 		// An idle connection that never sends a byte is closed.
-		let (_, idle) = try await open(group, server.port)
-		#expect(await waitClosed(idle, seconds: 5))
+		let (_, idle) = try await open(group, idleServer.port)
+		#expect(await waitClosed(idle, seconds: 10))
 
 		// Slowloris: a request head that never completes is closed within the request limit.
-		let (slow, slowSink) = try await open(group, server.port)
+		let (slow, slowSink) = try await open(group, slowServer.port)
 		try await slow.writeAndFlush(ByteBuffer(string: "POST /sync HTTP/1.1\r\nHost: x\r\nContent-Length: 100\r\n\r\npartial")).get()
-		#expect(await waitClosed(slowSink, seconds: 5))
+		#expect(await waitClosed(slowSink, seconds: 10))
 
-		// Connection cap: with two held open, a third is refused.
-		let (_, a) = try await open(group, server.port)
-		let (_, b) = try await open(group, server.port)
-		let (_, c) = try await open(group, server.port)
-		#expect(await waitClosed(c, seconds: 0.8) && !a.isClosed && !b.isClosed)
+		// Connection cap: with two held open, a third is refused. Admission runs on each
+		// child's own event loop, so `a` and `b` must be answered before `c` dials, or `c`
+		// could take a slot first and `b` would be the one refused.
+		let (aCh, a) = try await open(group, capped.port)
+		#expect(try await waitServed(aCh, a, seconds: 10))
+		let (bCh, b) = try await open(group, capped.port)
+		#expect(try await waitServed(bCh, b, seconds: 10))
+		let (_, c) = try await open(group, capped.port)
+		#expect(await waitClosed(c, seconds: 10))
+		#expect(!a.isClosed && !b.isClosed)
 	}
 
 	@Test func aProxyThatFailsToBindShutsItsClientDownInsteadOfCrashing() async throws {
