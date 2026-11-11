@@ -284,7 +284,7 @@ func runExtended(_ command: String, _ a: ParsedArgs, _ rest: [String]) async thr
 		let invite = try readToken(a, as: InviteToken.self)
 		let relay = try relayInfo(a)
 		let role = a.value("role").map { Role(rawValue: $0) } ?? .member
-		guard let role else { throw VaultError.invalidArgument("invalid role: \(a.value("role")!) (expected \"member\" or \"admin\")") }
+		guard let role else { throw VaultError.invalidArgument("invalid role: \(a.value("role")!) (expected \"member\", \"admin\" or \"reader\")") }
 		try await withEngine(a) { e in
 			let j = try await e.shareVault(invite, role: role, relay: relay)
 			let sas = await e.enrollmentSas(newDeviceSignPub: invite.deviceSignPub)

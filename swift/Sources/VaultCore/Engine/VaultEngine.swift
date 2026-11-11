@@ -339,12 +339,13 @@ public actor VaultEngine {
 
 	// Verify every op's signature against the auth log, decrypt, and merge. A
 	// validly-signed but malformed op is skipped rather than fatal: throwing would
-	// lock every replica out, including the admin who must remove the writer.
+	// lock every replica out, including the admin who must remove the writer. Ops
+	// signed by a reader's device are skipped the same way.
 	func rebuildState(_ membership: Membership) throws {
 		var fresh = VaultState()
 		var maxHlc = ""
 		for op in try store.allOps() {
-			guard let signPub = AuthLog.deviceSignKey(membership, op.deviceId),
+			guard let signPub = AuthLog.writerSignKey(membership, op.deviceId),
 				WireProtocol.verifyEnvelope(op, signPub: signPub)
 			else { continue }
 			guard let field = try? Self.decryptOp(op.payload, keys: keys) else { continue }
@@ -360,6 +361,7 @@ public actor VaultEngine {
 	// MARK: - emit
 
 	func emitOps(_ ops: [FieldOp]) throws {
+		try requireWriter()
 		guard let key = keys[currentKeyCommit] else { throw VaultError.noCurrentKey }
 		// Read the next seq and write under ONE write lock: another process (the CLI and
 		// the app share a database) could otherwise claim the same (device, seq), and the
@@ -379,12 +381,13 @@ public actor VaultEngine {
 	}
 
 	// Re-encrypt FieldOps verbatim: their HLCs and `replaces` sets are CRDT
-	// causality, and fresh timestamps would let a stale offline value win.
+	// causality, and fresh timestamps would let a stale offline value win. Reader ops
+	// are left out: re-emitting them under this device's key would launder them.
 	func reencryptableOps(_ membership: Membership) throws -> [FieldOp] {
 		var seen = Set<String>()
 		var out: [FieldOp] = []
 		for env in try store.allOps() {
-			guard let signPub = AuthLog.deviceSignKey(membership, env.deviceId),
+			guard let signPub = AuthLog.writerSignKey(membership, env.deviceId),
 				WireProtocol.verifyEnvelope(env, signPub: signPub),
 				let field = try? Self.decryptOp(env.payload, keys: keys)
 			else { continue }
@@ -397,6 +400,12 @@ public actor VaultEngine {
 	func nextHlc() throws -> String { try HLCCodec.encode(clock.tick()) }
 
 	// MARK: - items
+
+	// Readers decrypt but never change the vault. Other replicas ignore a reader's op
+	// anyway (rebuildState); this fails early with a clear error.
+	public func requireWriter() throws {
+		guard role.canWriteItems else { throw VaultError.notAuthorized("this device belongs to a reader: it cannot add, edit or remove items") }
+	}
 
 	func findByTitle(_ title: String) -> ItemView? { state.list().first { $0.fields["title"] == title } }
 
@@ -412,6 +421,7 @@ public actor VaultEngine {
 
 	@discardableResult
 	public func addItem(title: String, fields: ItemFields = [], itemType: ItemType = .default) throws -> String {
+		try requireWriter()
 		let itemId = VaultCrypto.randomBytes(16).hex
 		let all = Self.ordered([("title", title)] + fields + [(CRDTFields.itemType, itemType.rawValue)])
 		try emitOps(try ItemOps.build(itemId: itemId, fields: all, nextHlc: nextHlc))
@@ -419,6 +429,7 @@ public actor VaultEngine {
 	}
 
 	public func editItem(title: String, fields: ItemFields, itemType: ItemType? = nil) throws {
+		try requireWriter()
 		guard let item = findByTitle(title) else { throw VaultError.noSuchItem(title) }
 		let merged = Self.ordered(itemType.map { fields + [(CRDTFields.itemType, $0.rawValue)] } ?? fields)
 		try emitOps(
@@ -426,6 +437,7 @@ public actor VaultEngine {
 	}
 
 	public func removeItem(title: String) throws {
+		try requireWriter()
 		guard let item = findByTitle(title) else { throw VaultError.noSuchItem(title) }
 		try emitOps([ItemOps.delete(itemId: item.itemId, hlc: try nextHlc())])
 	}

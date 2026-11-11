@@ -6,6 +6,7 @@ import {
 	heads,
 	entryHash,
 	deviceSignKey,
+	writerSignKey,
 	type LogEntry,
 	type EntryBody,
 	deviceIdOf,
@@ -74,7 +75,7 @@ const addMember = (
 	by: Signer,
 	uid: string,
 	who: Identity,
-	role: "admin" | "member" = "member",
+	role: "admin" | "member" | "reader" = "member",
 ): Signer => {
 	chain = add(chain, userBody(uid, who, role), by.deviceId, "device", by.priv);
 	const dev = id();
@@ -91,7 +92,11 @@ const genesis = (owner: Identity, userId = "owner", vaultId = "v1"): EntryBody =
 	role: "owner",
 });
 
-const userBody = (uid: string, who: Identity, role: "admin" | "member" = "member"): EntryBody => ({
+const userBody = (
+	uid: string,
+	who: Identity,
+	role: "admin" | "member" | "reader" = "member",
+): EntryBody => ({
 	type: "add-user",
 	userId: uid,
 	userSignPub: who.sign.publicKey.toString("base64"),
@@ -351,4 +356,21 @@ test("an owner device may enroll a device for another member (recovery); others 
 	// holding it could otherwise re-enroll itself).
 	const self = enroll(rec.chain, "bob", id(), "bob", "user", bobId.sign.privateKey);
 	assert.equal(replay(self.chain, "v1").members.get("bob")!.devices.has(self.deviceId), false);
+});
+
+test("a reader cannot author ops or enroll siblings; owner recovery still works", () => {
+	const owner = ownerRoot(id());
+	const rita = addMember(owner.chain, owner, "rita", id(), "reader");
+	const bob = addMember(rita.chain, owner, "bob", id());
+	const m = replay(bob.chain, "v1");
+	assert.equal(m.members.get("rita")!.role, "reader");
+	assert.ok(deviceSignKey(m, rita.deviceId), "reader's device is active");
+	assert.equal(writerSignKey(m, rita.deviceId), undefined);
+	assert.ok(writerSignKey(m, bob.deviceId), "members still write");
+
+	const sibling = enroll(bob.chain, "rita", id(), rita.deviceId, "device", rita.priv);
+	const after = replay(sibling.chain, "v1");
+	assert.equal(after.members.get("rita")!.devices.has(sibling.deviceId), false);
+	const rec = enroll(bob.chain, "rita", id(), owner.deviceId, "device", owner.priv);
+	assert.ok(replay(rec.chain, "v1").members.get("rita")!.devices.has(rec.deviceId));
 });

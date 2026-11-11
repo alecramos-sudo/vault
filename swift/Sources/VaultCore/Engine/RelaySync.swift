@@ -160,13 +160,18 @@ extension VaultEngine {
 
 		// The relay is only a transport: store an op only if the device it names
 		// signed it (ops are UNIQUE(device_id, seq), so a forged one would otherwise
-		// occupy the genuine op's slot for good). Historical keys count.
-		let authentic = resp.ops.filter { op in m.deviceKeys[op.deviceId].map { WireProtocol.verifyEnvelope(op, signPub: $0) } ?? false }
+		// occupy the genuine op's slot for good). Historical keys count; a reader's
+		// device never authors an op, so its ops are dropped (rebuildState ignores them too).
+		let authentic = resp.ops.filter { op in
+			guard let key = m.deviceKeys[op.deviceId], m.deviceOwners[op.deviceId].flatMap({ m.members[$0] })?.role.canWriteItems ?? false
+			else { return false }
+			return WireProtocol.verifyEnvelope(op, signPub: key)
+		}
 		stats.pulled = try store.putOps(WireProtocol.acceptContiguous(authentic) { (try? self.store.maxSeq(for: $0)) ?? 0 })
 		for g in resp.grants where WireProtocol.grantAuthentic(teamId: vaultId, g, m) { try store.putGrant(teamId: vaultId, g) }
 
-		// Push only what the relay lacks AND would accept (active devices only).
-		let toPush = try store.opsSince(resp.vector).filter { AuthLog.deviceSignKey(m, $0.deviceId) != nil }
+		// Push only what the relay lacks AND would accept (active writer devices only).
+		let toPush = try store.opsSince(resp.vector).filter { AuthLog.writerSignKey(m, $0.deviceId) != nil }
 		let lacksAuth = Set(resp.lacksAuth), lacksRot = Set(resp.lacksRotations)
 		let relayGrants = Set(resp.grants.map(Self.grantKey))
 		let rotations = try store.rotations().filter { raw in

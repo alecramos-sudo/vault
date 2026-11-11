@@ -14,7 +14,7 @@ public enum RelayServer {
 		RelayDeps(
 			authorize: { await access.authorize($0) },
 			verifyOp: { op, team in
-				guard let m = store.membershipFor(team), let key = AuthLog.deviceSignKey(m, op.deviceId) else { return false }
+				guard let m = store.membershipFor(team), let key = AuthLog.writerSignKey(m, op.deviceId) else { return false }
 				return WireProtocol.verifyEnvelope(op, signPub: key)
 			},
 			// A rotation advances the current epoch only if signed by an active owner/admin

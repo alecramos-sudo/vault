@@ -47,7 +47,9 @@ let help = """
 
 	Sharing with other people
 	  invite                       Joiner: generate a user identity, print Invite Token
-	  share --token <invite> [--role member|admin] [--relay <url>]   Admin: print Join Token
+	  share --token <invite> [--role member|admin|reader] [--relay <url>]   Admin: print Join Token
+	                               reader: can list, get and run, but never add, edit, rm,
+	                               rotate, share or enroll another device (agent boxes)
 	  join --token <join>          Joiner: validate, add own device, build replica
 
 	Recovery escrow / keystore / secrets
@@ -212,6 +214,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 		var fields = try collectFields(a.all("field"))
 		let type = try parseItemType(a.value("type"))
 		try await withEngine(a) { e in
+			try await e.requireWriter()  // before reading any item secret
 			// stdin order: passphrase, --field-stdin lines, then the item password.
 			try readStdinFields(a, into: &fields)
 			if a.flag("password") {
@@ -278,6 +281,7 @@ func run(_ argv: [String]) async throws -> Int32 {
 		let type = try parseItemType(a.value("type"))
 		var fields = try collectFields(a.all("field"))
 		try await withEngine(a) { e in
+			try await e.requireWriter()
 			try readStdinFields(a, into: &fields)
 			if fields.isEmpty && type == nil {
 				throw VaultError.invalidArgument("nothing to update: pass --field k=v ... and/or --type <t>")

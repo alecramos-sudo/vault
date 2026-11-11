@@ -4,7 +4,13 @@ import Foundation
 // Entries reference the heads they observed and are signed over content+parents,
 // so concurrent membership edits reconcile deterministically at replay.
 
-public enum Role: String, Sendable { case owner, admin, member }
+// `reader` (fork-only) receives epoch keys like a member but may never author an
+// item op or enroll a sibling device. Upstream clients parse it as `member`.
+public enum Role: String, Sendable {
+	case owner, admin, member, reader
+
+	public var canWriteItems: Bool { self != .reader }
+}
 
 public enum SignerKind: String, Sendable { case user, device }
 
@@ -272,6 +278,10 @@ public enum AuthLog {
 			guard let signer = activeDeviceMember(state, e.signerId), signer.userId == userId || signer.role == .owner else {
 				throw AuthError(message: "add-device requires an active device of the owning user (or an owner device)")
 			}
+			// A reader is one device: a stolen reader key must not be able to mint more.
+			if signer.role == .reader {
+				throw AuthError(message: "a reader device cannot enroll devices")
+			}
 			return signer.devices[e.signerId]!.signPub
 		case "prove-device":
 			let deviceId = try need("deviceId")
@@ -445,7 +455,10 @@ public enum AuthLog {
 		}
 	}
 
-	public static func deviceSignKey(_ state: Membership, _ deviceId: String) -> Data? {
-		activeDeviceMember(state, deviceId)?.devices[deviceId].map { Data(base64: $0.signPub) }
+	// The key an item op must verify under: an active device of a member whose role may
+	// write. A reader's op has no key, so every replica and relay ignores it.
+	public static func writerSignKey(_ state: Membership, _ deviceId: String) -> Data? {
+		guard let m = activeDeviceMember(state, deviceId), m.role.canWriteItems else { return nil }
+		return m.devices[deviceId].map { Data(base64: $0.signPub) }
 	}
 }

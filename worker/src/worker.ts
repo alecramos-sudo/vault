@@ -16,7 +16,7 @@ import {
 	admissible,
 	entryHash,
 	replay,
-	deviceSignKey,
+	writerSignKey,
 	validRootGenesis,
 	wellFormedEntry,
 	type LogEntry,
@@ -361,10 +361,10 @@ export class RelayDO {
 			const { status, body } = await handle(rr, store, {
 				authorize: (header) => authorizeHeaders(header, access),
 				// Authenticate authorship against the auth log so a member can't
-				// pre-claim/censor another device's (deviceId, seq) slot.
+				// pre-claim/censor another device's (deviceId, seq) slot. Readers never write.
 				verifyOp: (op, teamId) => {
 					const m = store.membershipFor(teamId);
-					const key = m && deviceSignKey(m, op.deviceId);
+					const key = m && writerSignKey(m, op.deviceId);
 					return !!key && verifyEnvelope(op, key);
 				},
 				// Bound synthetic-rotation floods: only well-formed rotations signed by

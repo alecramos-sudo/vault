@@ -20,7 +20,7 @@ public enum PeerServer {
 			// Authenticate authorship against this device's own auth log, so a tailnet
 			// peer can't censor a device's (deviceId, seq) slot or flood the store.
 			verifyOp: { op, _ in
-				guard let m = peer.membership(), let key = AuthLog.deviceSignKey(m, op.deviceId) else { return false }
+				guard let m = peer.membership(), let key = AuthLog.writerSignKey(m, op.deviceId) else { return false }
 				return WireProtocol.verifyEnvelope(op, signPub: key)
 			},
 			verifyRotation: { rec, _ in peer.membership().map { Rotation.authentic(rec, $0) } ?? false },

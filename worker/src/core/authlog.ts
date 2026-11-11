@@ -27,7 +27,9 @@ import { wellFormedEntry } from "./wire.ts";
 
 export { wellFormedEntry };
 
-export type Role = "owner" | "admin" | "member";
+// "reader" (fork-only, spec §5) gets epoch keys but never authors an item op or
+// enrolls a sibling device; matches the Swift AuthLog.
+export type Role = "owner" | "admin" | "member" | "reader";
 
 // Genesis: establishes the vault creator (a user) and roots the DAG.
 export type GenesisEntry = {
@@ -295,6 +297,7 @@ const resolveSigner = (state: Membership, e: LogEntry): string => {
 				throw new Error(
 					"add-device requires an active device of the owning user (or an owner device)",
 				);
+			if (signer.role === "reader") throw new Error("a reader device cannot enroll devices");
 			return signer.devices.get(e.signerId)!.signPub;
 		}
 		case "prove-device": {
@@ -555,9 +558,15 @@ export const validRootGenesis = (entry: LogEntry, expectedVaultId: string): bool
 	}
 };
 
-// Resolve a device's signing public key (for op verification), if authorized.
+// Resolve a device's signing public key, if it is an active device.
 export const deviceSignKey = (state: Membership, deviceId: string): Buffer | undefined => {
 	const m = activeDeviceMember(state, deviceId);
 	const d = m?.devices.get(deviceId);
 	return d ? Buffer.from(d.signPub, "base64") : undefined;
+};
+
+// The key an item op must verify under: a reader's device has none.
+export const writerSignKey = (state: Membership, deviceId: string): Buffer | undefined => {
+	if (activeDeviceMember(state, deviceId)?.role === "reader") return undefined;
+	return deviceSignKey(state, deviceId);
 };

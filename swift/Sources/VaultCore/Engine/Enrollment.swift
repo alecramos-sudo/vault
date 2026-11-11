@@ -73,6 +73,8 @@ extension VaultEngine {
 		guard let me = AuthLog.activeDeviceMember(m, deviceId), me.userId == userId else {
 			throw VaultError.notAuthorized("this device is not authorized to enroll another")
 		}
+		// The auth log refuses it too (AuthLog.resolveSigner); fail before signing.
+		guard me.role != .reader else { throw VaultError.notAuthorized("a reader cannot enroll additional devices") }
 		let chain = try store.authLog()
 		try store.appendAuthEntry(
 			try Self.signedEntry(
@@ -204,8 +206,8 @@ extension VaultEngine {
 	public func shareVault(_ invite: InviteToken, role: Role = .member, relay: RelayInfo? = nil) throws -> JoinToken {
 		let m = try AuthLog.replay(try store.authLog(), expectedVaultId: vaultId)
 		guard Self.isAdminDevice(m, deviceId) else { throw VaultError.notAuthorized("only admins may share a vault") }
-		guard role == .member || role == .admin else {
-			throw VaultError.invalidArgument("invalid role: \(role.rawValue) (expected \"member\" or \"admin\")")
+		guard role == .member || role == .admin || role == .reader else {
+			throw VaultError.invalidArgument("invalid role: \(role.rawValue) (expected \"member\", \"admin\" or \"reader\")")
 		}
 		let chain = try store.authLog()
 		try store.appendAuthEntry(
