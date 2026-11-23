@@ -3,7 +3,7 @@ import Testing
 
 @testable import VaultCore
 
-// Fleet hardening (agents#241, Bastion review 2026-11-10).
+// Fleet hardening.
 @Suite struct ForcedScrubTests {
 	@Test func forceMasksShortValues() {
 		let s = Scrubber()
