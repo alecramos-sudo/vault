@@ -117,7 +117,12 @@ jobs:
           - { os: ubuntu-24.04-arm, target: linux-arm64, flags: "--static-swift-stdlib" }
           # cflags reach every C/C++ compile, tests included. The runner's MSVC STL asserts
           # Clang 22+, and the Swift 6.3 toolchain ships Clang 21.
-          - { os: windows-2025, target: windows-x64, flags: "", cflags: "-Xcc -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH" }
+          - {
+              os: windows-2025,
+              target: windows-x64,
+              flags: "",
+              cflags: "-Xcc -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -Xcxx -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH",
+            }
     # Windows builds without VaultNet (no relay/serve/proxy/tailnet sync) and with the
     # vendored SQLite; see swift/Package.swift.
     runs-on: ${{ matrix.os }}
