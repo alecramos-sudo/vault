@@ -54,10 +54,16 @@ private func connect(_ group: EventLoopGroup, port: Int) async throws -> (Channe
 	return (ch, sink)
 }
 
+// How long a client waits for the proxy's reply. A hang bound, not a latency check: every
+// wait also ends as soon as the proxy closes the connection, so passing runs stay fast. The
+// whole suite runs in parallel, and on a 4 vCPU runner its blocking tests have stalled Swift's
+// cooperative pool for ~20s, which held the proxy's CONNECT task past the old 5s limit.
+private let replyBound: Double = 30
+
 private func rawHTTP(_ group: EventLoopGroup, port: Int, _ request: String) async throws -> String {
 	let (ch, sink) = try await connect(group, port: port)
 	try await ch.writeAndFlush(ByteBuffer(string: request)).get()
-	let out = await sink.wait(until: { $0.contains("\r\n\r\n") && ($0.hasSuffix("}") || $0.hasSuffix("\n")) && $0.count > 20 }, seconds: 5)
+	let out = await sink.wait(until: { $0.contains("\r\n\r\n") && ($0.hasSuffix("}") || $0.hasSuffix("\n")) && $0.count > 20 }, seconds: replyBound)
 	try? await ch.close()
 	return out
 }
@@ -66,7 +72,7 @@ private func rawHTTP(_ group: EventLoopGroup, port: Int, _ request: String) asyn
 private func tunnel(_ group: EventLoopGroup, port: Int, target: String, caPEM: String, verifyHost: String?, _ request: String) async throws -> (connect: String, inner: String) {
 	let (ch, sink) = try await connect(group, port: port)
 	try await ch.writeAndFlush(ByteBuffer(string: "CONNECT \(target) HTTP/1.1\r\nHost: \(target)\r\n\r\n")).get()
-	let head = await sink.wait(until: { $0.contains("\r\n\r\n") }, seconds: 5)
+	let head = await sink.wait(until: { $0.contains("\r\n\r\n") }, seconds: replyBound)
 	guard head.hasPrefix("HTTP/1.1 200") else {
 		try? await ch.close()
 		return (head, "")
@@ -81,7 +87,7 @@ private func tunnel(_ group: EventLoopGroup, port: Int, target: String, caPEM: S
 	try await ch.pipeline.addHandlers([tls, inner], position: .first).get()
 	// An untrusted CA makes the handshake fail and the channel close: an error here is the outcome.
 	try? await ch.writeAndFlush(ByteBuffer(string: request)).get()
-	let out = await inner.wait(until: { $0.contains("\r\n\r\n") && $0.hasSuffix("}") }, seconds: 10)
+	let out = await inner.wait(until: { $0.contains("\r\n\r\n") && $0.hasSuffix("}") }, seconds: replyBound)
 	try? await ch.close()
 	return (head, out)
 }
