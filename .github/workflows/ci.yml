@@ -164,6 +164,11 @@ jobs:
             exit 1
           fi
           dist/vault --version
+      # `swift test` runs a debug build; this syncs with the release binary we ship.
+      # Windows builds without VaultNet, so it has no relay to talk to.
+      - if: runner.os != 'Windows'
+        name: relay sync smoke test (shipped binary)
+        run: scripts/relay-smoke.sh dist/vault
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: vault-${{ matrix.target }}
