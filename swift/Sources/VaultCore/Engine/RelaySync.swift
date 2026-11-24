@@ -44,9 +44,9 @@ public struct RelayError: Error, Sendable, CustomStringConvertible {
 	public init(description: String) { self.description = description }
 }
 
-// Collects a response while enforcing the size cap AS BYTES ARRIVE: a compromised relay
+// Collects one response while enforcing the size cap AS BYTES ARRIVE: a compromised relay
 // or peer must not be able to make us buffer an unbounded body before a check runs.
-private final class CappedFetch: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+private final class CappedFetch: @unchecked Sendable {
 	let cap: Int
 	private(set) var data = Data()
 	private(set) var response: URLResponse?
@@ -55,24 +55,16 @@ private final class CappedFetch: NSObject, URLSessionDataDelegate, @unchecked Se
 
 	init(cap: Int) { self.cap = cap }
 
-	// Never follow redirects: URLSession would re-send our custom credential headers
-	// (`cf-access-token`, `CF-Access-Client-Secret`) to whatever host a compromised or
-	// misconfigured relay names. The 3xx then surfaces as an ordinary non-2xx error.
-	func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
-		completionHandler(nil)
-	}
-
-	func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+	func receive(_ response: URLResponse) -> URLSession.ResponseDisposition {
 		self.response = response
 		if response.expectedContentLength > Int64(cap) {
 			exceeded = true
-			completionHandler(.cancel)
-		} else {
-			completionHandler(.allow)
+			return .cancel
 		}
+		return .allow
 	}
 
-	func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+	func receive(_ chunk: Data, from dataTask: URLSessionDataTask) {
 		guard !exceeded else { return }
 		if data.count + chunk.count > cap {
 			exceeded = true
@@ -83,9 +75,65 @@ private final class CappedFetch: NSObject, URLSessionDataDelegate, @unchecked Se
 		data.append(chunk)
 	}
 
-	func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+	func complete(_ error: Error?) {
 		continuation?.resume(returning: error)
 		continuation = nil
+	}
+}
+
+// One URLSession for the life of the process, with each task's callbacks routed to its
+// own CappedFetch. swift-corelibs-foundation (Linux) aborts the process when a session's
+// curl multi handle is torn down ("_MultiHandle deallocated with non-zero retain count"),
+// so a session per request, invalidated afterwards, crashed every sync on Linux.
+private final class RelayTransport: NSObject, URLSessionDataDelegate, @unchecked Sendable {
+	static let shared = RelayTransport()
+
+	private let lock = NSLock()
+	private var fetches: [Int: CappedFetch] = [:]
+	private var sessionStorage: URLSession?
+
+	var session: URLSession {
+		lock.withLock {
+			if let s = sessionStorage { return s }
+			let cfg = URLSessionConfiguration.ephemeral  // no cookies/cache/credentials on disk
+			cfg.httpShouldSetCookies = false
+			let s = URLSession(configuration: cfg, delegate: self, delegateQueue: nil)
+			sessionStorage = s
+			return s
+		}
+	}
+
+	func run(_ req: URLRequest, into fetch: CappedFetch) async -> Error? {
+		let task = session.dataTask(with: req)
+		lock.withLock { fetches[task.taskIdentifier] = fetch }
+		return await withCheckedContinuation { c in
+			fetch.continuation = c
+			task.resume()
+		}
+	}
+
+	private func fetch(for task: URLSessionTask) -> CappedFetch? {
+		lock.withLock { fetches[task.taskIdentifier] }
+	}
+
+	// Never follow redirects: URLSession would re-send our custom credential headers
+	// (`cf-access-token`, `CF-Access-Client-Secret`) to whatever host a compromised or
+	// misconfigured relay names. The 3xx then surfaces as an ordinary non-2xx error.
+	func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse, newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+		completionHandler(nil)
+	}
+
+	func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
+		completionHandler(fetch(for: dataTask)?.receive(response) ?? .cancel)
+	}
+
+	func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive chunk: Data) {
+		fetch(for: dataTask)?.receive(chunk, from: dataTask)
+	}
+
+	func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
+		let done = lock.withLock { fetches.removeValue(forKey: task.taskIdentifier) }
+		done?.complete(error)
 	}
 }
 
@@ -100,16 +148,8 @@ public enum RelayClient {
 		for (k, v) in auth.headers { req.setValue(v, forHTTPHeaderField: k) }
 		req.httpBody = body.serialized()
 		if let timeout { req.timeoutInterval = timeout }
-		let cfg = URLSessionConfiguration.ephemeral  // no cookies/cache/credentials on disk
-		cfg.httpShouldSetCookies = false
 		let fetch = CappedFetch(cap: maxBytes)
-		let session = URLSession(configuration: cfg, delegate: fetch, delegateQueue: nil)
-		defer { session.finishTasksAndInvalidate() }
-		let task = session.dataTask(with: req)
-		let failure: Error? = await withCheckedContinuation { c in
-			fetch.continuation = c
-			task.resume()
-		}
+		let failure = await RelayTransport.shared.run(req, into: fetch)
 		if fetch.exceeded { throw RelayError(description: "relay response exceeded \(maxBytes) bytes") }
 		if let failure { throw RelayError(description: "relay unreachable: \(failure.localizedDescription)") }
 		let status = (fetch.response as? HTTPURLResponse)?.statusCode ?? 0
